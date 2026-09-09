@@ -421,19 +421,19 @@ fn get_git(state: tauri::State<AppState>) -> gitstatus::GitSnapshot {
 }
 
 #[tauri::command]
-fn open_git_repo(state: tauri::State<AppState>) {
-    let path = state.git.lock().unwrap().repo_path.clone();
-    if path.is_empty() {
-        return;
+fn open_git_repo(app: AppHandle, state: tauri::State<AppState>) {
+    let (path, branch) = {
+        let g = state.git.lock().unwrap();
+        (g.repo_path.clone(), g.branch.clone())
+    };
+    match gitstatus::open_action(&path, &branch) {
+        Ok(msg) => {
+            let _ = app.emit("notice", msg);
+        }
+        Err(e) => {
+            let _ = app.emit("notice", format!("Git: {e}"));
+        }
     }
-    let mut cmd = std::process::Command::new("explorer");
-    cmd.arg(path.as_str());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
-    let _ = cmd.spawn();
 }
 
 #[tauri::command]

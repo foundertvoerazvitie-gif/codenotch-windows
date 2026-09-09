@@ -264,6 +264,73 @@ fn parse_porcelain_branch(out: &str) -> (String, i32, i32, bool) {
     (branch, ahead, behind, dirty)
 }
 
+fn origin_https(repo: &Path) -> Option<String> {
+    let url = run_with_timeout("git", &["remote", "get-url", "origin"], Some(repo), GIT_TIMEOUT_SECS)?;
+    let u = url.trim();
+    if let Some(rest) = u.strip_prefix("git@github.com:") {
+        let path = rest.trim_end_matches(".git");
+        return Some(format!("https://github.com/{path}"));
+    }
+    if let Some(rest) = u.strip_prefix("ssh://git@github.com/") {
+        let path = rest.trim_end_matches(".git");
+        return Some(format!("https://github.com/{path}"));
+    }
+    if u.starts_with("https://github.com/") {
+        return Some(u.trim_end_matches(".git").to_string());
+    }
+    if u.starts_with("http://github.com/") {
+        return Some(format!("https://{}", u.trim_start_matches("http://").trim_end_matches(".git")));
+    }
+    None
+}
+
+/// Click the Git cell: open PR on GitHub if one exists, else the repo page, else Explorer.
+pub fn open_action(repo_path: &str, branch: &str) -> Result<String, String> {
+    if repo_path.is_empty() {
+        return Err("no repo".into());
+    }
+    let path = Path::new(repo_path);
+    if !path.is_dir() {
+        return Err("repo folder missing".into());
+    }
+
+    // Prefer open PR for current branch
+    if !branch.is_empty() && branch != "HEAD" {
+        if let Some(out) = run_with_timeout_ex(
+            "gh",
+            &["pr", "view", "--web"],
+            Some(path),
+            8,
+        ) {
+            if out.ok {
+                return Ok("Opened PR on GitHub".into());
+            }
+        }
+    }
+
+    // Repo homepage via gh
+    if let Some(out) = run_with_timeout_ex("gh", &["browse"], Some(path), 8) {
+        if out.ok {
+            return Ok("Opened repo on GitHub".into());
+        }
+    }
+
+    // HTTPS origin without gh
+    if let Some(url) = origin_https(path) {
+        crate::community::open_url(&url)?;
+        return Ok("Opened repo on GitHub".into());
+    }
+
+    // Last resort: folder
+    let mut cmd = Command::new("explorer");
+    cmd.arg(repo_path);
+    no_window(&mut cmd);
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("explorer: {e}"))?;
+    Ok("Opened repo folder".into())
+}
+
 fn origin_is_github(repo: &Path) -> bool {
     let Some(url) = run_with_timeout("git", &["remote", "get-url", "origin"], Some(repo), GIT_TIMEOUT_SECS) else {
         return false;

@@ -273,6 +273,7 @@ const I18N={
     welcome_open:'Открыть Telegram',
     welcome_skip:'Позже',
     git_title:'Git / CI',
+    git_click:'Клик — PR или репо на GitHub',
   },
   en:{
     usage:'Usage', used:'Used', resetting:'Resetting now…',
@@ -288,6 +289,7 @@ const I18N={
     welcome_open:'Open Telegram',
     welcome_skip:'Not now',
     git_title:'Git / CI',
+    git_click:'Click — open PR or repo on GitHub',
   },
 };
 const LABEL_RU={
@@ -423,8 +425,8 @@ function renderCard(){
     let html=`<div class="c-head"><span class="c-title">${i.git_title}</span></div>`;
     if(gitSnap.line1) html+=`<div class="c-note">${esc(gitSnap.line1)}</div>`;
     if(gitSnap.line2) html+=`<div class="c-note">${esc(gitSnap.line2)}</div>`;
-    // At most one third line: note > line3 > updated ago
-    const tail=gitSnap.note||gitSnap.line3||(gitSnap.fetched_at?i.updated(ago(gitSnap.fetched_at)):'');
+    // Third line: note / line3 / click hint (not "updated ago" — click is the action)
+    const tail=gitSnap.note||gitSnap.line3||i.git_click;
     if(tail) html+=`<div class="c-sub">${esc(tail)}</div>`;
     c.innerHTML=html;
     placeCard();
