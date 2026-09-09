@@ -1,5 +1,7 @@
 # Codenotch for Windows
 
+> Landing page for this repo (Telegram, overview, quick start): see the **[root README](../README.md)**.
+
 A Windows port of [Codenotch](https://github.com/vinzdg/codenotch) — the usage notch that
 sits on the edge of your screen and answers two questions at a glance:
 **how much of my AI allowance is left**, and **is Claude still working**.
