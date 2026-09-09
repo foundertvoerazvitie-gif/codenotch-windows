@@ -88,6 +88,8 @@
   .c-head .mark{display:inline-block;width:16px;height:16px;color:#e8e8ea;margin-right:2px}
   .c-head .mark svg{width:16px;height:16px;fill:currentColor}
   .pct{font-size:15px;font-weight:600;color:#fff;font-variant-numeric:tabular-nums}
+  .cell.git .pct{display:none}
+  .cell.git .git-dot{width:14px;height:14px;border-radius:50%;border:2px solid #444;box-sizing:border-box}
   .dim{opacity:.55}
   /* Session arc animation */
   @keyframes spin{to{transform:rotate(360deg)}}
@@ -195,6 +197,9 @@ let usage={status:'',windows:[],fetched_at:0,note:''};
 let codexSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let cursorSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let agSnap={status:'absent',windows:[],fetched_at:0,note:''};
+let gitSnap={status:'absent',level:'green',branch:'',repo_path:'',line1:'',line2:'',line3:'',fetched_at:0,note:''};
+const GIT_COL={green:'#28E07B',yellow:'#FFBF00',red:'#FF3F00',gray:'#888888'};
+function gitVisible(){ return gitSnap.status!=='absent'; }
 let glyphs={}; // id → {kind:'mark'|'appicon', url}
 let activity=[]; // working state of the non-Claude providers: {provider,state:'busy'|'waiting',name,detail,since}
 // "Is it working?" per provider: Claude from the four-state engine, the others from the activity probe. Returns running | attention | idle
@@ -267,6 +272,7 @@ const I18N={
     welcome_body:'Новости порта, обновления и разборы лимитов — в Telegram @aistanislav',
     welcome_open:'Открыть Telegram',
     welcome_skip:'Позже',
+    git_title:'Git / CI',
   },
   en:{
     usage:'Usage', used:'Used', resetting:'Resetting now…',
@@ -281,6 +287,7 @@ const I18N={
     welcome_body:'Release notes and tips — Telegram @aistanislav',
     welcome_open:'Open Telegram',
     welcome_skip:'Not now',
+    git_title:'Git / CI',
   },
 };
 const LABEL_RU={
@@ -350,14 +357,32 @@ function isStale(){
   return usage.fetched_at>0 && (Date.now()-usage.fetched_at)>5*60*1000;
 }
 
+function renderGitCell(){
+  if(!gitVisible()) return '';
+  return `<div class="cell git" data-p="git">
+    <div class="ringwrap"><svg class="ring" viewBox="0 0 56 56"></svg><div class="glyph small">⎇</div></div>
+    <div class="git-dot"></div></div>`;
+}
+function paintGitCell(){
+  const cell=pill.querySelector('.cell[data-p="git"]'); if(!cell||!gitVisible()) return;
+  const svg=cell.querySelector('svg.ring'), dot=cell.querySelector('.git-dot'), wrap=cell.querySelector('.ringwrap');
+  const col=GIT_COL[gitSnap.level]||GIT_COL.gray;
+  let inner=`<circle cx="28" cy="28" r="22" fill="#2a2a2a"/><circle cx="28" cy="28" r="25" fill="none" stroke="${TRACK}" stroke-width="5"/>`;
+  inner+=`<circle cx="28" cy="28" r="25" fill="none" stroke="${col}" stroke-width="5" opacity="0.85"/>`;
+  svg.innerHTML=inner;
+  if(dot) dot.style.background=col;
+  wrap.classList.toggle('dim', gitSnap.status==='stale');
+}
+
 function renderRing(){
   const ps=providers();
+  const gitOn=gitVisible();
   // Rebuild the DOM only when the structure changes (never swap the element under the cursor)
-  const want=ps.map(p=>p.id+':'+(glyphs[p.id]?glyphs[p.id].kind:'-')).join(',');
+  const want=ps.map(p=>p.id+':'+(glyphs[p.id]?glyphs[p.id].kind:'-')).join(',')+(gitOn?';git':'');
   if(pill.dataset.cells!==want){
     pill.innerHTML=ps.map(p=>`<div class="cell" data-p="${p.id}">
       <div class="ringwrap"><svg class="ring" viewBox="0 0 56 56"></svg><div class="glyph ${(!glyphs[p.id]&&p.glyph.length>1)?'small':''}">${glyphHtml(p)}</div></div>
-      <div class="pct">—</div></div>`).join('');
+      <div class="pct">—</div></div>`).join('')+renderGitCell();
     pill.dataset.cells=want;
   }
   for(const p of ps){
@@ -379,6 +404,7 @@ function renderRing(){
     glyph.classList.toggle('dim', !!(h && h.used>=1));
     wrap.classList.toggle('dim', staleOf(p.snap));
   }
+  paintGitCell();
 }
 
 const STATE_DOT_DONE='#57c7ff';
@@ -393,7 +419,19 @@ let hoverId='claude';
 function renderCard(){
   const c=document.getElementById('card');
   const i=t();
+  if(hoverId==='git'&&gitVisible()){
+    let html=`<div class="c-head"><span class="c-title">${i.git_title}</span></div>`;
+    if(gitSnap.line1) html+=`<div class="c-note">${esc(gitSnap.line1)}</div>`;
+    if(gitSnap.line2) html+=`<div class="c-note">${esc(gitSnap.line2)}</div>`;
+    // At most one third line: note > line3 > updated ago
+    const tail=gitSnap.note||gitSnap.line3||(gitSnap.fetched_at?i.updated(ago(gitSnap.fetched_at)):'');
+    if(tail) html+=`<div class="c-sub">${esc(tail)}</div>`;
+    c.innerHTML=html;
+    placeCard();
+    return;
+  }
   const p=providers().find(x=>x.id===hoverId)||providers()[0];
+  if(!p){ c.innerHTML=''; placeCard(); return; }
   const snap=p.snap;
   const headIcon=glyphHtml(p,true);
   let html=`<div class="c-head">${headIcon}<span class="c-title">${p.name} · ${i.usage}</span></div>`;
@@ -552,7 +590,10 @@ document.addEventListener('mousemove',e=>{
 });
 document.addEventListener('mouseup',e=>{
   if(e.button!==0)return;
-  if(press&&!dragging) invoke('open_provider_page',{provider:press.id}).catch(()=>{});
+  if(press&&!dragging){
+    if(press.id==='git') invoke('open_git_repo').catch(()=>{});
+    else invoke('open_provider_page',{provider:press.id}).catch(()=>{});
+  }
   press=null;
 });
 listen('drag_end',()=>{dragging=false;press=null;}).catch(()=>{});
@@ -598,6 +639,8 @@ listen('antigravity',e=>{agSnap=e.payload||agSnap;renderRing();if(card.classList
 invoke('get_antigravity').then(u=>{agSnap=u||agSnap;renderRing();}).catch(()=>{});
 listen('glyphs',e=>{glyphs=e.payload||glyphs;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 listen('activity',e=>{activity=e.payload||activity;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
+listen('git',e=>{gitSnap=e.payload||gitSnap;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
+invoke('get_git').then(g=>{gitSnap=g||gitSnap;renderRing();}).catch(()=>{});
 invoke('get_activity').then(a=>{activity=a||activity;renderRing();}).catch(()=>{});
 invoke('get_glyphs').then(g=>{glyphs=g||glyphs;renderRing();}).catch(()=>{});
 invoke('get_codex').then(u=>{codexSnap=u||codexSnap;renderRing();}).catch(()=>{});

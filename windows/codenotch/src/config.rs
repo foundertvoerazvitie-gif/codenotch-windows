@@ -28,6 +28,30 @@ impl Default for ProviderVisibility {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitStatusConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub repo_path: Option<String>,
+    #[serde(default = "default_git_poll_secs")]
+    pub poll_secs: u64,
+}
+
+fn default_git_poll_secs() -> u64 {
+    120
+}
+
+impl Default for GitStatusConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            repo_path: None,
+            poll_secs: default_git_poll_secs(),
+        }
+    }
+}
+
 impl ProviderVisibility {
     pub fn get(&self, id: &str) -> bool {
         match id {
@@ -104,6 +128,8 @@ pub struct Config {
     /// First-run Telegram / community card has been dismissed
     #[serde(default)]
     pub welcome_seen: bool,
+    #[serde(default)]
+    pub git_status: GitStatusConfig,
 }
 
 fn default_along() -> f64 {
@@ -145,6 +171,7 @@ impl Default for Config {
             alert_muted: ProviderVisibility::all_false(),
             accent: default_accent(),
             welcome_seen: false,
+            git_status: GitStatusConfig::default(),
         }
     }
 }

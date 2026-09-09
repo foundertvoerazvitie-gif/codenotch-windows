@@ -19,6 +19,7 @@ mod antigravity;
 mod glyphs;
 mod activity;
 mod diag;
+mod gitstatus;
 mod watcher;
 
 use std::sync::Mutex;
@@ -42,6 +43,7 @@ pub struct AppState {
     pub glyphs: Mutex<std::collections::HashMap<String, glyphs::Glyph>>,
     /// Working state of the non-Claude providers (Cursor reports it; Codex and Antigravity are inferred from recent writes)
     pub activity: Mutex<Vec<activity::Activity>>,
+    pub git: Mutex<gitstatus::GitSnapshot>,
 }
 
 fn resolved_lang(raw: &str) -> String {
@@ -310,6 +312,33 @@ pub fn apply_lang(app: &AppHandle, lang: &str) {
     broadcast(app);
 }
 
+pub fn toggle_git_status(app: &AppHandle) {
+    {
+        let st = app.state::<AppState>();
+        let mut c = st.cfg.lock().unwrap();
+        c.git_status.enabled = !c.git_status.enabled;
+        config::save(&c);
+    }
+    tray::refresh_menu(app);
+    let git_disabled = {
+        let st = app.state::<AppState>();
+        let off = !st.cfg.lock().unwrap().git_status.enabled;
+        off
+    };
+    if git_disabled {
+        let snap = gitstatus::GitSnapshot {
+            status: "absent".into(),
+            ..Default::default()
+        };
+        {
+            let st = app.state::<AppState>();
+            *st.git.lock().unwrap() = snap.clone();
+        }
+        let _ = app.emit("git", &snap);
+    }
+    gitstatus::request_refresh();
+}
+
 pub fn toggle_provider(app: &AppHandle, id: &str) {
     {
         let st = app.state::<AppState>();
@@ -383,6 +412,28 @@ fn refresh_usage(app: AppHandle) {
     codex::request_refresh();
     cursor::request_refresh();
     antigravity::request_refresh();
+    gitstatus::request_refresh();
+}
+
+#[tauri::command]
+fn get_git(state: tauri::State<AppState>) -> gitstatus::GitSnapshot {
+    state.git.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn open_git_repo(state: tauri::State<AppState>) {
+    let path = state.git.lock().unwrap().repo_path.clone();
+    if path.is_empty() {
+        return;
+    }
+    let mut cmd = std::process::Command::new("explorer");
+    cmd.arg(path.as_str());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let _ = cmd.spawn();
 }
 
 #[tauri::command]
@@ -725,6 +776,7 @@ fn main() {
             antigravity: Mutex::new(antigravity::load_persisted()),
             glyphs: Mutex::new(Default::default()),
             activity: Mutex::new(Vec::new()),
+            git: Mutex::new(gitstatus::load_persisted()),
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -734,6 +786,8 @@ fn main() {
             get_antigravity,
             get_glyphs,
             get_activity,
+            get_git,
+            open_git_repo,
             open_data_dir,
             drag_begin,
             open_provider_page,
@@ -763,6 +817,7 @@ fn main() {
             cursor::start(handle.clone());
             antigravity::start(handle.clone());
             activity::start(handle.clone());
+            gitstatus::start(handle.clone());
             // Collecting glyphs may read icon resources out of a few executables; do it off the main thread and push when done
             let gh = handle.clone();
             std::thread::spawn(move || reload_glyphs(&gh));

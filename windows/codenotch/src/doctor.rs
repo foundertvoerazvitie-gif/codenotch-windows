@@ -80,6 +80,7 @@ pub fn run() -> String {
     o += &format!("  {}\n", crate::antigravity::probe());
     o += &format!("\nprovider glyphs:\n{}\n", crate::glyphs::probe());
     o += &format!("\nworking state:\n  {}\n", crate::activity::probe());
+    o += &format!("\ngit / CI:\n  {}\n", crate::gitstatus::probe());
 
     o += "\nwatch.log (the most recent watcher log, if any):\n";
     if let Some(dir) = dirs::config_dir() {

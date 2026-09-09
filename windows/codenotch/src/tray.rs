@@ -66,6 +66,14 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
     )
     .checked(providers.gemini)
     .build(app)?;
+    let git_on = {
+        let st = app.state::<crate::AppState>();
+        let on = st.cfg.lock().unwrap().git_status.enabled;
+        on
+    };
+    let p_git = CheckMenuItemBuilder::with_id("show-git", tr(lang, "show_git"))
+        .checked(git_on)
+        .build(app)?;
     // Top-level checks: Windows tray submenus often fail to open / deliver clicks.
     let muted = {
         let st = app.state::<crate::AppState>();
@@ -161,6 +169,7 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .item(&p_codex)
         .item(&p_cursor)
         .item(&p_gemini)
+        .item(&p_git)
         .separator()
         .item(&lang_menu)
         .item(&alerts_menu)
@@ -217,6 +226,7 @@ fn handle(app: &AppHandle, id: &str) {
             crate::codex::request_refresh();
             crate::cursor::request_refresh();
             crate::antigravity::request_refresh();
+            crate::gitstatus::request_refresh();
             let a = app.clone();
             std::thread::spawn(move || crate::reload_glyphs(&a));
         }
@@ -231,6 +241,7 @@ fn handle(app: &AppHandle, id: &str) {
         }
         "quit" => app.exit(0),
         _ if id.starts_with("lang-") => crate::apply_lang(app, &id[5..]),
+        "show-git" => crate::toggle_git_status(app),
         _ if id.starts_with("prov-") => crate::toggle_provider(app, &id[5..]),
         _ if id.starts_with("alert-") => crate::threshold::toggle_mute(app, &id[6..]),
         _ if id.starts_with("edge-") => crate::apply_edge(app, &id[5..]),
