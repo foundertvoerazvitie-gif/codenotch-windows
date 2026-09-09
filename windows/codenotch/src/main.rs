@@ -28,7 +28,7 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Logical size of the notch window: the 70 pt pill column on the right plus room for the hover card on the left.
 pub const NOTCH_W: f64 = 340.0;
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r31";
+pub const BUILD: &str = "r33";
 pub const NOTCH_H: f64 = 460.0; // 300 clipped the card once it held three window blocks plus the session list
 
 pub struct AppState {
@@ -502,15 +502,55 @@ fn open_provider_page(provider: String) {
     let _ = cmd.spawn();
 }
 
-/// Card expansion state: Some(hot rectangles, in **physical pixels** relative to the window's
-/// top-left as x,y,w,h) = expanded; None = collapsed. The page converts the rectangles with its
-/// own devicePixelRatio before reporting them, so no scale conversion happens on this side —
-/// WebView2's DPR and the window's scale_factor can disagree (see report_dpr).
-static HOT: Mutex<Option<Vec<[f64; 4]>>> = Mutex::new(None);
+/// Interactive hit rectangles in **physical pixels** (x,y,w,h) relative to the window top-left.
+/// Page order: pill first, optional welcome, optional card last when expanded.
+#[derive(Clone, Default)]
+struct HitState {
+    rects: Vec<[f64; 4]>,
+    card_expanded: bool,
+}
+
+static HIT: Mutex<HitState> = Mutex::new(HitState {
+    rects: Vec::new(),
+    card_expanded: false,
+});
 
 #[tauri::command]
 fn set_expanded(on: bool, rects: Option<Vec<[f64; 4]>>) {
-    *HOT.lock().unwrap() = if on { Some(rects.unwrap_or_default()) } else { None };
+    let mut st = HIT.lock().unwrap();
+    st.card_expanded = on;
+    if let Some(r) = rects {
+        st.rects = r;
+    }
+}
+
+const HOT_PAD: f64 = 10.0;
+
+fn point_in_hot_rect(lx: f64, ly: f64, r: &[f64; 4]) -> bool {
+    lx >= r[0] - HOT_PAD
+        && ly >= r[1] - HOT_PAD
+        && lx < r[0] + r[2] + HOT_PAD
+        && ly < r[1] + r[3] + HOT_PAD
+}
+
+/// Per-rect hit test; pill↔card gap bridge only when the detail card is expanded (welcome stays standalone).
+fn cursor_in_hot_rects(rects: &[[f64; 4]], card_expanded: bool, lx: f64, ly: f64) -> bool {
+    if rects.is_empty() {
+        return false;
+    }
+    if rects.iter().any(|r| point_in_hot_rect(lx, ly, r)) {
+        return true;
+    }
+    if card_expanded && rects.len() >= 2 {
+        let pill = &rects[0];
+        let card = &rects[rects.len() - 1];
+        let x0 = pill[0].min(card[0]);
+        let y0 = pill[1].min(card[1]);
+        let x1 = (pill[0] + pill[2]).max(card[0] + card[2]);
+        let y1 = (pill[1] + pill[3]).max(card[1] + card[3]);
+        return lx >= x0 && ly >= y0 && lx < x1 && ly < y1;
+    }
+    false
 }
 
 /// The WebView zoom currently applied (1.0 = uncorrected)
@@ -562,52 +602,45 @@ fn report_dpr(app: AppHandle, dpr: f64, w: f64, h: f64) {
     }
 }
 
-/// WebView2's mouseleave is unreliable inside a NOACTIVATE transparent window — a cursor that
-/// leaves quickly often produces no WM_MOUSELEAVE, and the card stays up. Rather than trust DOM
-/// events, the Rust side watches the system cursor while the card is expanded and emits
-/// pointer_left once the cursor is outside; the page collapses after its 250 ms grace period.
-/// "Outside the window" is not the test, though: the window has a 340×460 transparent area, so
-/// the cursor is compared against the hot rectangles the page reports (pill, card, and the gap
-/// between them), and two consecutive misses (300 ms) count as leaving.
+/// System cursor poll: (1) click-through everywhere except reported hit rects via
+/// set_ignore_cursor_events; (2) while the detail card is expanded, emit pointer_left when the
+/// cursor leaves the hot area (DOM mouseleave is unreliable on NOACTIVATE transparent windows).
 fn start_pointer_watchdog(app: AppHandle) {
     std::thread::spawn(move || {
         let mut miss = 0u8;
+        let mut ignoring = false;
+        let mut was_inside = false;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(150));
-            let rects = match HOT.lock().unwrap().clone() {
-                Some(r) => r,
-                None => {
-                    miss = 0;
-                    continue;
-                }
-            };
             let Some(w) = app.get_webview_window("notch") else { continue };
             let (Ok(pos), Ok(cur)) = (w.outer_position(), app.cursor_position()) else { continue };
-            // Cursor position relative to the window's top-left, in physical pixels; the hot rectangles are physical too, so no scale conversion
             let lx = cur.x - pos.x as f64;
             let ly = cur.y - pos.y as f64;
-            const PAD: f64 = 10.0;
-            let in_window = w
-                .outer_size()
-                .map(|s| lx >= 0.0 && ly >= 0.0 && lx < s.width as f64 && ly < s.height as f64)
-                .unwrap_or(true);
-            let mut inside = in_window && rects.iter().any(|r| {
-                lx >= r[0] - PAD && ly >= r[1] - PAD && lx < r[0] + r[2] + PAD && ly < r[1] + r[3] + PAD
-            });
-            // The gap between hot rectangles (pill and card) counts as inside: use the bounding box of all of them
-            if !inside && in_window && rects.len() > 1 {
-                let x0 = rects.iter().map(|r| r[0]).fold(f64::MAX, f64::min);
-                let y0 = rects.iter().map(|r| r[1]).fold(f64::MAX, f64::min);
-                let x1 = rects.iter().map(|r| r[0] + r[2]).fold(f64::MIN, f64::max);
-                let y1 = rects.iter().map(|r| r[1] + r[3]).fold(f64::MIN, f64::max);
-                inside = lx >= x0 && ly >= y0 && lx < x1 && ly < y1;
+            let dragging = DRAGGING.load(std::sync::atomic::Ordering::SeqCst);
+            let hit = HIT.lock().unwrap().clone();
+            let inside = cursor_in_hot_rects(&hit.rects, hit.card_expanded, lx, ly);
+            let expanded = hit.card_expanded;
+            let want_ignore = !dragging && !inside;
+            if want_ignore != ignoring {
+                ignoring = want_ignore;
+                if w.set_ignore_cursor_events(want_ignore).is_err() {
+                    applog(&format!("set_ignore_cursor_events({want_ignore}) failed"));
+                }
             }
+            if inside && !was_inside && !dragging {
+                let _ = app.emit("pointer_entered", (lx, ly));
+            }
+            was_inside = inside;
             static LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 12 {
                 applog(&format!(
-                    "watchdog: cursor_rel=({lx:.0},{ly:.0}) inside={inside} rects={rects:?} winpos=({},{})",
-                    pos.x, pos.y
+                    "watchdog: cursor_rel=({lx:.0},{ly:.0}) inside={inside} ignore={ignoring} expanded={expanded} rects={:?} winpos=({},{})",
+                    hit.rects, pos.x, pos.y
                 ));
+            }
+            if !expanded {
+                miss = 0;
+                continue;
             }
             if inside {
                 miss = 0;
@@ -615,7 +648,7 @@ fn start_pointer_watchdog(app: AppHandle) {
                 miss += 1;
                 if miss >= 2 {
                     miss = 0;
-                    *HOT.lock().unwrap() = None;
+                    HIT.lock().unwrap().card_expanded = false;
                     let _ = app.emit("pointer_left", ());
                 }
             }
@@ -808,6 +841,7 @@ fn main() {
             noactivate(&handle);
             if let Some(w) = handle.get_webview_window("notch") {
                 let _ = w.show();
+                let _ = w.set_ignore_cursor_events(true);
             }
             tray::setup(&handle)?;
             server::start(handle.clone(), port);

@@ -232,6 +232,7 @@ function applyEdge(){
   const e=currentEdge();
   document.body.classList.remove('edge-right','edge-left','edge-top','edge-bottom');
   document.body.classList.add('edge-'+e);
+  reportHitRects();
 }
 function applyAccentFromState(){
   setAccent(stateSnap.accent_hex||'#00FF88');
@@ -407,6 +408,7 @@ function renderRing(){
     wrap.classList.toggle('dim', staleOf(p.snap));
   }
   paintGitCell();
+  reportHitRects();
 }
 
 const STATE_DOT_DONE='#57c7ff';
@@ -510,8 +512,8 @@ function esc(s){const d=document.createElement('div');d.textContent=s||'';return
 /* Hover: stays expanded while either the pill or the card is under the cursor; collapses after a 250 ms grace period (upstream motion rule) */
 const card=document.getElementById('card'), pill=document.getElementById('pill');
 let hideTimer=null;
-function showCard(){clearTimeout(hideTimer);card.classList.add('show');renderCard();armWatchdog();} // show first, then render: placeCard needs offsetHeight
-function hideCard(){card.classList.remove('show');invoke('set_expanded',{on:false,rects:null}).catch(()=>{});}
+function showCard(){clearTimeout(hideTimer);card.classList.add('show');renderCard();reportHitRects();} // show first, then render: placeCard needs offsetHeight
+function hideCard(){card.classList.remove('show');reportHitRects();}
 function scheduleHide(){clearTimeout(hideTimer);hideTimer=setTimeout(hideCard,250);}
 // ===== Diagnostics + geometry =====
 function jslog(m){invoke('log_js',{msg:String(m)}).catch(()=>{});}
@@ -520,10 +522,13 @@ function callq(cmd,args){ // invoke with visible failure: any command error is r
 }
 // Hot rectangles are reported in physical pixels (multiplied by this page's real DPR), so the Rust side does no conversion — WebView2's DPR and the window scale can disagree
 function rectOf(el){const r=el.getBoundingClientRect(),k=window.devicePixelRatio||1;return [r.left*k,r.top*k,r.width*k,r.height*k];}
-function armWatchdog(){
-  requestAnimationFrame(()=>{ // wait one frame so renderCard's new content is laid out before measuring
-    if(!card.classList.contains('show'))return;
-    callq('set_expanded',{on:true,rects:[rectOf(pill),rectOf(card)]}).catch(()=>{});
+function reportHitRects(){
+  requestAnimationFrame(()=>{ // wait one frame so layout is settled before measuring
+    const rects=[rectOf(pill)];
+    const welcome=document.getElementById('welcome');
+    if(welcome?.classList.contains('show')) rects.push(rectOf(welcome));
+    if(card.classList.contains('show')) rects.push(rectOf(card));
+    callq('set_expanded',{on:card.classList.contains('show'),rects}).catch(()=>{});
   });
 }
 // Viewport fit (pure front-end fallback, independent of Rust): the window is 340 × primary scale physical px,
@@ -540,7 +545,8 @@ function reportDpr(){
   callq('report_dpr',{dpr:window.devicePixelRatio||1,w:innerWidth,h:innerHeight}).catch(()=>{});
 }
 reportDpr();
-window.addEventListener('resize',()=>{clearTimeout(window._dprT);window._dprT=setTimeout(()=>{reportDpr();if(card.classList.contains('show'))armWatchdog();},120);});
+reportHitRects();
+window.addEventListener('resize',()=>{clearTimeout(window._dprT);window._dprT=setTimeout(()=>{reportDpr();reportHitRects();},120);});
 matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change',reportDpr);
 
 /* Collapse test: no trust in element-level mouseenter/mouseleave/e.target at all —
@@ -567,7 +573,7 @@ document.addEventListener('mousemove',e=>{
   if(hot){
     clearTimeout(hideTimer);
     const id=cellAt(e.clientX,e.clientY);
-    if(id&&id!==hoverId){ hoverId=id; if(card.classList.contains('show')){ renderCard(); armWatchdog(); } }
+    if(id&&id!==hoverId){ hoverId=id; if(card.classList.contains('show')){ renderCard(); reportHitRects(); } }
     if(!card.classList.contains('show')) showCard();
   }
   else if(card.classList.contains('show')){ if(hideLogged++<5) jslog(`mousemove left the hot area -> collapse at ${e.clientX},${e.clientY}`); scheduleHide(); }
@@ -576,9 +582,23 @@ document.addEventListener('mouseout',e=>{ // relatedTarget null = the cursor lef
   if(!e.relatedTarget && card.classList.contains('show')){ if(hideLogged++<5) jslog('mouseout left the page -> collapse'); scheduleHide(); }
 });
 listen('pointer_left',()=>{clearTimeout(hideTimer);hideCard();}).catch(()=>{});
+// Rust flips click-through off when the system cursor enters the pill — DOM mousemove may not fire yet
+listen('pointer_entered',e=>{
+  const p=e.payload;
+  const k=window.devicePixelRatio||1;
+  const x=Array.isArray(p)?p[0]/k:(p?.x??0)/k;
+  const y=Array.isArray(p)?p[1]/k:(p?.y??0)/k;
+  if(dragging)return;
+  if(pointerInHot(x,y)){
+    clearTimeout(hideTimer);
+    const id=cellAt(x,y);
+    if(id) hoverId=id;
+    if(!card.classList.contains('show')) showCard();
+  }
+}).catch(()=>{});
 // Card content changes change its height -> report the hot rectangles again
-listen('usage',()=>{if(card.classList.contains('show'))armWatchdog();}).catch(()=>{});
-listen('state',()=>{if(card.classList.contains('show'))armWatchdog();}).catch(()=>{});
+listen('usage',()=>{if(card.classList.contains('show'))reportHitRects();}).catch(()=>{});
+listen('state',()=>{reportHitRects();}).catch(()=>{});
 /* The pill can be dragged up and down the right edge. Press and move more than 4 px = drag (handed to Rust,
    which follows the system cursor; the card is collapsed first); release without moving = click (opens the provider's usage page). */
 let press=null, dragging=false;
@@ -609,7 +629,7 @@ function notice(msg){
 function renderWelcome(){
   const el=document.getElementById('welcome');
   if(!el) return;
-  if(!stateSnap.show_welcome){ el.classList.remove('show'); el.innerHTML=''; return; }
+  if(!stateSnap.show_welcome){ el.classList.remove('show'); el.innerHTML=''; reportHitRects(); return; }
   const i=t();
   el.innerHTML=`<div class="w-title">${i.welcome_title}</div>
     <div class="w-body">${i.welcome_body}</div>
@@ -627,6 +647,7 @@ function renderWelcome(){
     invoke('dismiss_welcome').catch(()=>{});
     stateSnap.show_welcome=false; renderWelcome();
   });
+  reportHitRects();
 }
 
 listen('usage',e=>{usage=e.payload||usage;renderRing();if(card.classList.contains('show'))renderCard();})
