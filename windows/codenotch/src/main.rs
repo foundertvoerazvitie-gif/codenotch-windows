@@ -28,7 +28,7 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Logical size of the notch window: the 70 pt pill column on the right plus room for the hover card on the left.
 pub const NOTCH_W: f64 = 340.0;
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r33";
+pub const BUILD: &str = "r35";
 pub const NOTCH_H: f64 = 460.0; // 300 clipped the card once it held three window blocks plus the session list
 
 pub struct AppState {
@@ -375,6 +375,73 @@ fn noactivate(app: &AppHandle) {
 #[cfg(not(windows))]
 fn noactivate(_app: &AppHandle) {}
 
+/// WS_EX_TRANSPARENT on the notch HWND and every child (WebView2) so wheel/hover pass through when ignoring.
+#[cfg(windows)]
+fn apply_click_through(w: &tauri::WebviewWindow, ignore: bool) -> Result<(), String> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED,
+        WS_EX_TRANSPARENT,
+    };
+
+    let h = w.hwnd().map_err(|e| e.to_string())?;
+    let root = HWND(h.0 as isize as *mut core::ffi::c_void);
+
+    struct Ctx {
+        ignore: bool,
+    }
+
+    unsafe fn patch_hwnd(hwnd: HWND, ignore: bool) {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let new_ex = if ignore {
+            ex | WS_EX_TRANSPARENT.0 as isize | WS_EX_LAYERED.0 as isize
+        } else {
+            ex & !(WS_EX_TRANSPARENT.0 as isize)
+        };
+        if new_ex == ex {
+            return;
+        }
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex);
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+
+    unsafe extern "system" fn enum_child(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = &*(lparam.0 as *const Ctx);
+        patch_hwnd(hwnd, ctx.ignore);
+        TRUE
+    }
+
+    let ctx = Ctx { ignore };
+    unsafe {
+        patch_hwnd(root, ignore);
+        let _ = EnumChildWindows(root, Some(enum_child), LPARAM(&ctx as *const Ctx as isize));
+    }
+    Ok(())
+}
+
+/// Tauri ignore API plus Win32 child HWND click-through; must run on the UI thread.
+fn set_ignore_state(w: &tauri::WebviewWindow, ignore: bool) -> Result<(), String> {
+    w.set_ignore_cursor_events(ignore)
+        .map_err(|e| e.to_string())?;
+    #[cfg(windows)]
+    apply_click_through(w, ignore)?;
+    Ok(())
+}
+
+static CURSOR_IGNORE_APPLIED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static CURSOR_IGNORE_INFLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 // ---------------- commands ----------------
 
 #[tauri::command]
@@ -608,10 +675,9 @@ fn report_dpr(app: AppHandle, dpr: f64, w: f64, h: f64) {
 fn start_pointer_watchdog(app: AppHandle) {
     std::thread::spawn(move || {
         let mut miss = 0u8;
-        let mut ignoring = false;
         let mut was_inside = false;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            std::thread::sleep(std::time::Duration::from_millis(50));
             let Some(w) = app.get_webview_window("notch") else { continue };
             let (Ok(pos), Ok(cur)) = (w.outer_position(), app.cursor_position()) else { continue };
             let lx = cur.x - pos.x as f64;
@@ -621,10 +687,35 @@ fn start_pointer_watchdog(app: AppHandle) {
             let inside = cursor_in_hot_rects(&hit.rects, hit.card_expanded, lx, ly);
             let expanded = hit.card_expanded;
             let want_ignore = !dragging && !inside;
-            if want_ignore != ignoring {
-                ignoring = want_ignore;
-                if w.set_ignore_cursor_events(want_ignore).is_err() {
-                    applog(&format!("set_ignore_cursor_events({want_ignore}) failed"));
+            let applied = CURSOR_IGNORE_APPLIED.load(std::sync::atomic::Ordering::SeqCst);
+            if want_ignore != applied
+                && CURSOR_IGNORE_INFLIGHT
+                    .compare_exchange(
+                        false,
+                        true,
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                    )
+                    .is_ok()
+            {
+                let app_mt = app.clone();
+                let post = app.run_on_main_thread(move || {
+                    let Some(win) = app_mt.get_webview_window("notch") else {
+                        CURSOR_IGNORE_INFLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+                        return;
+                    };
+                    match set_ignore_state(&win, want_ignore) {
+                        Ok(()) => {
+                            CURSOR_IGNORE_APPLIED.store(want_ignore, std::sync::atomic::Ordering::SeqCst);
+                            applog(&format!("ignore_state({want_ignore}) ok"));
+                        }
+                        Err(e) => applog(&format!("ignore_state({want_ignore}): {e}")),
+                    }
+                    CURSOR_IGNORE_INFLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+                });
+                if post.is_err() {
+                    CURSOR_IGNORE_INFLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+                    applog(&format!("ignore_state({want_ignore}): run_on_main_thread failed"));
                 }
             }
             if inside && !was_inside && !dragging {
@@ -633,8 +724,9 @@ fn start_pointer_watchdog(app: AppHandle) {
             was_inside = inside;
             static LOGGED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 12 {
+                let ignoring = CURSOR_IGNORE_APPLIED.load(std::sync::atomic::Ordering::SeqCst);
                 applog(&format!(
-                    "watchdog: cursor_rel=({lx:.0},{ly:.0}) inside={inside} ignore={ignoring} expanded={expanded} rects={:?} winpos=({},{})",
+                    "watchdog: cursor_rel=({lx:.0},{ly:.0}) inside={inside} ignore={ignoring} want_ignore={want_ignore} expanded={expanded} rects={:?} winpos=({},{})",
                     hit.rects, pos.x, pos.y
                 ));
             }
@@ -841,7 +933,12 @@ fn main() {
             noactivate(&handle);
             if let Some(w) = handle.get_webview_window("notch") {
                 let _ = w.show();
-                let _ = w.set_ignore_cursor_events(true);
+                match set_ignore_state(&w, true) {
+                    Ok(()) => {
+                        CURSOR_IGNORE_APPLIED.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Err(e) => applog(&format!("ignore_state startup: {e}")),
+                }
             }
             tray::setup(&handle)?;
             server::start(handle.clone(), port);
