@@ -28,7 +28,7 @@ use tauri::{AppHandle, Emitter, Manager};
 /// Logical size of the notch window: the 70 pt pill column on the right plus room for the hover card on the left.
 pub const NOTCH_W: f64 = 340.0;
 /// Hand-bumped build tag, written to run.log at startup so a log can always be matched to the exe that wrote it.
-pub const BUILD: &str = "r35";
+pub const BUILD: &str = "r36";
 pub const NOTCH_H: f64 = 460.0; // 300 clipped the card once it held three window blocks plus the session list
 
 pub struct AppState {
@@ -375,66 +375,114 @@ fn noactivate(app: &AppHandle) {
 #[cfg(not(windows))]
 fn noactivate(_app: &AppHandle) {}
 
-/// WS_EX_TRANSPARENT on the notch HWND and every child (WebView2) so wheel/hover pass through when ignoring.
+const HOT_PAD: f64 = 10.0;
+
+/// Window hit region from page-reported rects (physical px, top-left origin). Must run on the UI thread.
 #[cfg(windows)]
-fn apply_click_through(w: &tauri::WebviewWindow, ignore: bool) -> Result<(), String> {
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, TRUE};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        EnumChildWindows, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_LAYERED,
-        WS_EX_TRANSPARENT,
+fn apply_hit_region(w: &tauri::WebviewWindow, rects: &[[f64; 4]]) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR,
     };
 
     let h = w.hwnd().map_err(|e| e.to_string())?;
-    let root = HWND(h.0 as isize as *mut core::ffi::c_void);
+    let hwnd = HWND(h.0 as isize as *mut core::ffi::c_void);
 
-    struct Ctx {
-        ignore: bool,
-    }
-
-    unsafe fn patch_hwnd(hwnd: HWND, ignore: bool) {
-        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let new_ex = if ignore {
-            ex | WS_EX_TRANSPARENT.0 as isize | WS_EX_LAYERED.0 as isize
-        } else {
-            ex & !(WS_EX_TRANSPARENT.0 as isize)
-        };
-        if new_ex == ex {
-            return;
-        }
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex);
-        let _ = SetWindowPos(
-            hwnd,
-            None,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        );
-    }
-
-    unsafe extern "system" fn enum_child(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let ctx = &*(lparam.0 as *const Ctx);
-        patch_hwnd(hwnd, ctx.ignore);
-        TRUE
-    }
-
-    let ctx = Ctx { ignore };
     unsafe {
-        patch_hwnd(root, ignore);
-        let _ = EnumChildWindows(root, Some(enum_child), LPARAM(&ctx as *const Ctx as isize));
+        let final_rgn = if rects.is_empty() {
+            CreateRectRgn(0, 0, 1, 1)
+        } else {
+            let mut combined = CreateRectRgn(0, 0, 0, 0);
+            let mut have = false;
+            for r in rects {
+                let left = (r[0] - HOT_PAD).floor() as i32;
+                let top = (r[1] - HOT_PAD).floor() as i32;
+                let right = (r[0] + r[2] + HOT_PAD).ceil() as i32;
+                let bottom = (r[1] + r[3] + HOT_PAD).ceil() as i32;
+                let piece = CreateRectRgn(
+                    left,
+                    top,
+                    right.max(left + 1),
+                    bottom.max(top + 1),
+                );
+                if !have {
+                    let _ = DeleteObject(combined);
+                    combined = piece;
+                    have = true;
+                } else {
+                    let merged = CreateRectRgn(0, 0, 0, 0);
+                    CombineRgn(merged, combined, piece, RGN_OR);
+                    let _ = DeleteObject(combined);
+                    let _ = DeleteObject(piece);
+                    combined = merged;
+                }
+            }
+            combined
+        };
+        SetWindowRgn(hwnd, final_rgn, true);
     }
     Ok(())
 }
 
-/// Tauri ignore API plus Win32 child HWND click-through; must run on the UI thread.
+#[cfg(not(windows))]
+fn apply_hit_region(_w: &tauri::WebviewWindow, _rects: &[[f64; 4]]) -> Result<(), String> {
+    Ok(())
+}
+
+fn hit_rects_fingerprint(rects: &[[f64; 4]], card_expanded: bool) -> String {
+    format!("{card_expanded}:{rects:?}")
+}
+
+static HIT_REGION_FINGERPRINT: Mutex<String> = Mutex::new(String::new());
+static HIT_REGION_INFLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Tauri ignore API only; must run on the UI thread.
 fn set_ignore_state(w: &tauri::WebviewWindow, ignore: bool) -> Result<(), String> {
     w.set_ignore_cursor_events(ignore)
-        .map_err(|e| e.to_string())?;
-    #[cfg(windows)]
-    apply_click_through(w, ignore)?;
-    Ok(())
+        .map_err(|e| e.to_string())
+}
+
+fn schedule_hit_region_if_changed(app: &AppHandle, rects: &[[f64; 4]], card_expanded: bool) {
+    let fp = hit_rects_fingerprint(rects, card_expanded);
+    {
+        let last = HIT_REGION_FINGERPRINT.lock().unwrap();
+        if *last == fp {
+            return;
+        }
+    }
+    if HIT_REGION_INFLIGHT
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_err()
+    {
+        return;
+    }
+    {
+        let mut last = HIT_REGION_FINGERPRINT.lock().unwrap();
+        *last = fp;
+    }
+    let rects_owned: Vec<[f64; 4]> = rects.to_vec();
+    let app_mt = app.clone();
+    let post = app.run_on_main_thread(move || {
+        let Some(win) = app_mt.get_webview_window("notch") else {
+            HIT_REGION_INFLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+            return;
+        };
+        match apply_hit_region(&win, &rects_owned) {
+            Ok(()) => applog(&format!("hit_region ok rects={rects_owned:?}")),
+            Err(e) => applog(&format!("hit_region: {e}")),
+        }
+        HIT_REGION_INFLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+    });
+    if post.is_err() {
+        HIT_REGION_INFLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+        applog("hit_region: run_on_main_thread failed");
+    }
 }
 
 static CURSOR_IGNORE_APPLIED: std::sync::atomic::AtomicBool =
@@ -591,8 +639,6 @@ fn set_expanded(on: bool, rects: Option<Vec<[f64; 4]>>) {
     }
 }
 
-const HOT_PAD: f64 = 10.0;
-
 fn point_in_hot_rect(lx: f64, ly: f64, r: &[f64; 4]) -> bool {
     lx >= r[0] - HOT_PAD
         && ly >= r[1] - HOT_PAD
@@ -684,6 +730,7 @@ fn start_pointer_watchdog(app: AppHandle) {
             let ly = cur.y - pos.y as f64;
             let dragging = DRAGGING.load(std::sync::atomic::Ordering::SeqCst);
             let hit = HIT.lock().unwrap().clone();
+            schedule_hit_region_if_changed(&app, &hit.rects, hit.card_expanded);
             let inside = cursor_in_hot_rects(&hit.rects, hit.card_expanded, lx, ly);
             let expanded = hit.card_expanded;
             let want_ignore = !dragging && !inside;
@@ -933,6 +980,12 @@ fn main() {
             noactivate(&handle);
             if let Some(w) = handle.get_webview_window("notch") {
                 let _ = w.show();
+                if let Err(e) = apply_hit_region(&w, &[]) {
+                    applog(&format!("hit_region startup: {e}"));
+                } else {
+                    let mut last = HIT_REGION_FINGERPRINT.lock().unwrap();
+                    *last = hit_rects_fingerprint(&[], false);
+                }
                 match set_ignore_state(&w, true) {
                     Ok(()) => {
                         CURSOR_IGNORE_APPLIED.store(true, std::sync::atomic::Ordering::SeqCst);
