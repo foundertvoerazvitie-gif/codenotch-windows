@@ -87,12 +87,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
           set -euo pipefail
           TAG="${{ steps.meta.outputs.tag }}"
           ZIP="${{ github.workspace }}/${{ steps.meta.outputs.zip }}"
           VER="${{ steps.meta.outputs.version }}"
-          SHA=$(cut -d' ' -f1 "${{ github.workspace }}/SHA256.txt")
+          SHA=$(tr -d '[:space:]' < "${{ github.workspace }}/SHA256.txt")
 
           NOTES=$(cat <<EOF
           ## Codenotch for Windows ${VER}
@@ -117,6 +118,8 @@ jobs:
           3. Tray → Refresh if the Grok cell does not appear yet
           EOF
           )
+          # Drop the common leading indent from the heredoc body.
+          NOTES=$(printf '%s\n' "$NOTES" | sed 's/^          //')
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
@@ -124,7 +127,6 @@ jobs:
               --title "Codenotch for Windows ${VER} — Grok limits" \
               --notes "$NOTES"
           else
-            # Create the tag from this commit when dispatching without a prior tag push.
             EXTRA=()
             if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
               EXTRA+=(--target "${{ github.sha }}")
