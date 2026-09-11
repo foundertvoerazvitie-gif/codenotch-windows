@@ -1,0 +1,137 @@
+name: Release Windows
+
+# Builds the Windows notch the same way prior manual releases did:
+# `cargo build --release` → zip with Codenotch.exe + README.txt.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or update (e.g. v0.3.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build & publish Windows zip
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build release binaries
+        run: cargo build --release -p codenotch -p codenotch-hook
+
+      - name: Resolve version / tag
+        id: meta
+        shell: bash
+        working-directory: ${{ github.workspace }}/windows
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          CARGO_VER=$(sed -n 's/^version = "\([^"]*\)"/\1/p' codenotch/Cargo.toml | head -1)
+          VER="${CARGO_VER:-${TAG#v}}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "zip=Codenotch-Windows-${VER}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Package zip (match prior release layout)
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.meta.outputs.version }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = Join-Path $env:RUNNER_TEMP "codenotch-stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/release/codenotch.exe" (Join-Path $stage "Codenotch.exe")
+          # Hook lives next to the main exe so tray "install hooks" finds it.
+          Copy-Item "target/release/codenotch-hook.exe" (Join-Path $stage "codenotch-hook.exe")
+          $readme = @"
+          Codenotch for Windows $($env:APP_VERSION)
+
+          Includes Grok CLI / SuperGrok usage limits ring (when ``grok login`` credentials exist).
+          Also: Claude, Codex, Cursor, Antigravity.
+
+          https://t.me/aistanislav
+          https://github.com/foundertvoerazvitie-gif/codenotch-windows
+          "@
+          # Strip the leading indent from the here-string lines.
+          $readme = ($readme -split "`n" | ForEach-Object { $_ -replace '^          ', '' }) -join "`r`n"
+          $utf8bom = New-Object System.Text.UTF8Encoding $true
+          [System.IO.File]::WriteAllText((Join-Path $stage "README.txt"), $readme, $utf8bom)
+          $zipPath = Join-Path $env:GITHUB_WORKSPACE $env:ZIP_NAME
+          if (Test-Path $zipPath) { Remove-Item $zipPath }
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -CompressionLevel Optimal
+          Get-FileHash -Algorithm SHA256 $zipPath | Tee-Object -Variable hash | Format-List
+          Set-Content -Path (Join-Path $env:GITHUB_WORKSPACE "SHA256.txt") -Value $hash.Hash -NoNewline
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
+          ZIP="${{ github.workspace }}/${{ steps.meta.outputs.zip }}"
+          VER="${{ steps.meta.outputs.version }}"
+          SHA=$(cut -d' ' -f1 "${{ github.workspace }}/SHA256.txt")
+
+          NOTES=$(cat <<EOF
+          ## Codenotch for Windows ${VER}
+
+          - **Grok CLI / SuperGrok** usage limits ring (reads \`%USERPROFILE%\\.grok\\auth.json\` after \`grok login\`)
+          - Existing providers unchanged: Claude, Codex, Cursor, Antigravity
+          - Packaging matches prior releases: zip with \`Codenotch.exe\` (+ \`codenotch-hook.exe\` for Claude Code hooks)
+
+          ### Download
+          **${{ steps.meta.outputs.zip }}**
+
+          Channel: https://t.me/aistanislav
+
+          SHA256:
+          \`\`\`
+          ${SHA}
+          \`\`\`
+
+          ### After install
+          1. Unzip and run \`Codenotch.exe\`
+          2. If you use Grok: \`grok login\` once (Grok CLI on PATH)
+          3. Tray → Refresh if the Grok cell does not appear yet
+          EOF
+          )
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Codenotch for Windows ${VER} — Grok limits" \
+              --notes "$NOTES"
+          else
+            # Create the tag from this commit when dispatching without a prior tag push.
+            EXTRA=()
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              EXTRA+=(--target "${{ github.sha }}")
+            fi
+            gh release create "$TAG" "$ZIP" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Codenotch for Windows ${VER} — Grok limits" \
+              --notes "$NOTES" \
+              "${EXTRA[@]}"
+          fi

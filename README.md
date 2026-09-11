@@ -35,7 +35,14 @@ Hide unused providers from the tray. Missing installs simply omit a cell.
 - Toasts at 80% / 100% (mute per provider)  
 - Tray → **Telegram @aistanislav** + one-time first-run card  
 
-## Build
+## Install
+
+Download the latest Windows zip from
+[Releases](https://github.com/foundertvoerazvitie-gif/codenotch-windows/releases)
+(`Codenotch-Windows-*.zip` → `Codenotch.exe`). For the Grok ring, sign in once with
+`grok login` (Grok CLI on PATH).
+
+## Build from source
 
 Needs Rust (MSVC) and WebView2 (included on Windows 11).
 

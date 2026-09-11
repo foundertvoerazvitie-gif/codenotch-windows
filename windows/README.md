@@ -33,7 +33,12 @@ Providers that are not installed simply do not get a cell. Tray toggles can hide
 - Threshold toasts at 80% / 100% (per-provider mute in the tray)
 - Soft community link: tray **Telegram @aistanislav** + one-time first-run card
 
-## Install / build
+## Install
+
+Prebuilt zip: [GitHub Releases](https://github.com/foundertvoerazvitie-gif/codenotch-windows/releases)
+(`Codenotch-Windows-*.zip` → run `Codenotch.exe`). Grok cell needs `grok login` once.
+
+## Build from source
 
 Prerequisites: Rust (MSVC toolchain), WebView2 runtime (ships with Windows 11).
 
