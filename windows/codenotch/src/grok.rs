@@ -458,7 +458,10 @@ pub fn start(app: AppHandle) {
         loop {
             let prev = {
                 let st = app.state::<AppState>();
-                st.grok.lock().unwrap().clone()
+                // Bind the clone before `st` drops so the MutexGuard temporary
+                // is not left hanging past the end of the block (E0597 on MSVC).
+                let snap = st.grok.lock().unwrap().clone();
+                snap
             };
             let snap = read_once(&prev, &mut consecutive_429);
             if snap.status == "error" || snap.status == "stale" {
