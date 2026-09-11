@@ -17,6 +17,9 @@
 //!   - Antigravity: transcript.jsonl is appended during a run (each step is written only once it
 //!     completes, so status is always DONE and useless); written within the last 45 s = working
 //!     (the model can think for a long time between steps, hence the wide window).
+//!   - Grok: `~/.grok/active_sessions.json` lists open TUIs; a session whose `updates.jsonl` was
+//!     written within the last 45 s, and whose pid is still alive when present, is busy (same
+//!     heuristic as upstream GrokActivityMonitor).
 //! Polled every 2 s (upstream cadence), broadcast only on change. Cost discipline: database
 //! connections stay open, nothing is re-queried unless the file's mtime changed, the rollout tail
 //! is re-read only when its mtime changed, PowerShell runs only occasionally to find the network
@@ -29,10 +32,11 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const INTERVAL: Duration = Duration::from_secs(2);
 const ANTIGRAVITY_STALE_MS: u64 = 45_000;
+const GROK_STALE_MS: u64 = 45_000;
 
 #[derive(Clone, Serialize, Debug, PartialEq)]
 pub struct Activity {
-    /// Provider id other than claude: codex / cursor / gemini
+    /// Provider id other than claude: codex / cursor / gemini / grok
     pub provider: String,
     /// busy | waiting
     pub state: String,
@@ -514,6 +518,100 @@ fn antigravity_activity() -> Vec<Activity> {
     vec![Activity { provider: "gemini".into(), state: "busy".into(), name: "Antigravity".into(), detail: "Working".into(), since: at }]
 }
 
+// ---------------- Grok ----------------
+
+fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        unsafe {
+            let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+                return false;
+            };
+            let _ = CloseHandle(h);
+            true
+        }
+    }
+    #[cfg(unix)]
+    {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+fn grok_session_dir(root: &std::path::Path, id: &str, cwd: Option<&str>) -> Option<std::path::PathBuf> {
+    if let Some(cwd) = cwd {
+        // Grok percent-encodes the cwd with a tight unreserved set (-._~ + alphanumerics).
+        let mut encoded = String::new();
+        for b in cwd.as_bytes() {
+            let c = *b as char;
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '~') {
+                encoded.push(c);
+            } else {
+                encoded.push_str(&format!("%{b:02X}"));
+            }
+        }
+        let candidate = root.join(&encoded).join(id);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    let Ok(rd) = std::fs::read_dir(root) else { return None };
+    for e in rd.flatten() {
+        let candidate = e.path().join(id);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn grok_activity() -> Vec<Activity> {
+    let Some(home) = dirs::home_dir() else { return vec![] };
+    let active = home.join(".grok").join("active_sessions.json");
+    let sessions_root = home.join(".grok").join("sessions");
+    let Ok(text) = std::fs::read_to_string(&active) else { return vec![] };
+    let Ok(rows) = serde_json::from_str::<Vec<serde_json::Value>>(&text) else { return vec![] };
+    let now = now_ms();
+    let mut out = Vec::new();
+    for row in rows {
+        let Some(id) = row.get("session_id").and_then(|x| x.as_str()).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if let Some(pid) = row.get("pid").and_then(|x| x.as_u64()).map(|p| p as u32) {
+            if !pid_alive(pid) {
+                continue;
+            }
+        }
+        let cwd = row.get("cwd").and_then(|x| x.as_str());
+        let Some(dir) = grok_session_dir(&sessions_root, id, cwd) else { continue };
+        let updates = dir.join("updates.jsonl");
+        let Some(at) = mtime_ms(&updates) else { continue };
+        if now.saturating_sub(at) > GROK_STALE_MS {
+            continue;
+        }
+        let name = cwd
+            .map(|c| std::path::Path::new(c).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Grok".into()))
+            .unwrap_or_else(|| "Grok".into());
+        out.push(Activity {
+            provider: "grok".into(),
+            state: "busy".into(),
+            name,
+            detail: "Grok".into(),
+            since: at,
+        });
+    }
+    out
+}
+
 // ---------------- Putting it together ----------------
 
 #[derive(Clone, Copy, Default)]
@@ -521,10 +619,16 @@ pub struct Presence {
     cursor: bool,
     codex: bool,
     gemini: bool,
+    grok: bool,
 }
 
 fn presence() -> Presence {
-    Presence { cursor: crate::cursor::present(), codex: crate::codex::present(), gemini: crate::antigravity::present() }
+    Presence {
+        cursor: crate::cursor::present(),
+        codex: crate::codex::present(),
+        gemini: crate::antigravity::present(),
+        grok: crate::grok::present(),
+    }
 }
 
 fn read_all(p: Presence, ctx: &mut Ctx) -> Vec<Activity> {
@@ -538,6 +642,9 @@ fn read_all(p: Presence, ctx: &mut Ctx) -> Vec<Activity> {
     }
     if p.gemini {
         all.extend(antigravity_activity());
+    }
+    if p.grok {
+        all.extend(grok_activity());
     }
     all
 }

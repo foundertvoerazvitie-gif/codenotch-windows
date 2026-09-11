@@ -7,7 +7,7 @@
 //!   3. The installed application's own icon (PrivateExtractIconsW on the exe resources, 64 px → PNG);
 //!   none of those → the page falls back to a letter.
 //! SVGs are inlined into the DOM as text (`fill="currentColor"` follows the CSS white/dimmed state);
-//! PNGs and app icons go through <img>. Ids match the page and upstream: claude / codex / cursor / gemini.
+//! PNGs and app icons go through <img>. Ids match the page and upstream: claude / codex / cursor / gemini / grok.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -25,14 +25,15 @@ pub struct Glyph {
     pub source: String,
 }
 
-pub const IDS: [&str; 4] = ["claude", "codex", "cursor", "gemini"];
+pub const IDS: [&str; 5] = ["claude", "codex", "cursor", "gemini", "grok"];
 
-/// Built-in artwork (@lobehub/icons-static-svg, MIT): the OpenAI mark for codex (matching upstream's glyph choice), the Antigravity mark for gemini
-const BUILTIN: [(&str, &str); 4] = [
+/// Built-in artwork (@lobehub/icons-static-svg, MIT): the OpenAI mark for codex (matching upstream's glyph choice), the Antigravity mark for gemini, Grok's mark for grok
+const BUILTIN: [(&str, &str); 5] = [
     ("claude", include_str!("../glyphs/claude.svg")),
     ("codex", include_str!("../glyphs/codex.svg")),
     ("cursor", include_str!("../glyphs/cursor.svg")),
     ("gemini", include_str!("../glyphs/gemini.svg")),
+    ("grok", include_str!("../glyphs/grok.svg")),
 ];
 
 /// Minimal SVG sanitising before inlining into the DOM: drop <script> blocks and on*="…" event
@@ -165,6 +166,9 @@ fn app_candidates(id: &str) -> Vec<PathBuf> {
         "gemini" => {
             v.push(programs.join("Antigravity").join("Antigravity.exe"));
             v.push(programs.join("antigravity").join("Antigravity.exe"));
+        }
+        "grok" => {
+            // Grok CLI is typically an npm global; no dedicated desktop shell to mine icons from.
         }
         _ => {}
     }
@@ -305,7 +309,7 @@ pub fn collect() -> HashMap<String, Glyph> {
 /// For doctor
 pub fn probe() -> String {
     let m = collect();
-    let mut lines = vec![format!("glyph directory: {} (drop claude/codex/cursor/gemini .svg or .png files here)", user_dir().display())];
+    let mut lines = vec![format!("glyph directory: {} (drop claude/codex/cursor/gemini/grok .svg or .png files here)", user_dir().display())];
     for id in IDS {
         lines.push(match m.get(id) {
             Some(g) => format!("  {id}: {} ← {}", g.kind, g.source),

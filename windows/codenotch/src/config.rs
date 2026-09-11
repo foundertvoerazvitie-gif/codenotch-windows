@@ -11,6 +11,8 @@ pub struct ProviderVisibility {
     pub cursor: bool,
     #[serde(default = "default_true")]
     pub gemini: bool,
+    #[serde(default = "default_true")]
+    pub grok: bool,
 }
 
 fn default_true() -> bool {
@@ -24,6 +26,7 @@ impl Default for ProviderVisibility {
             codex: true,
             cursor: true,
             gemini: true,
+            grok: true,
         }
     }
 }
@@ -59,6 +62,7 @@ impl ProviderVisibility {
             "codex" => self.codex,
             "cursor" => self.cursor,
             "gemini" => self.gemini,
+            "grok" => self.grok,
             _ => true,
         }
     }
@@ -69,6 +73,7 @@ impl ProviderVisibility {
             "codex" => self.codex = on,
             "cursor" => self.cursor = on,
             "gemini" => self.gemini = on,
+            "grok" => self.grok = on,
             _ => {}
         }
     }
@@ -80,6 +85,7 @@ impl ProviderVisibility {
             codex: false,
             cursor: false,
             gemini: false,
+            grok: false,
         }
     }
 }

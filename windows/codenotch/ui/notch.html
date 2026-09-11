@@ -197,6 +197,7 @@ let usage={status:'',windows:[],fetched_at:0,note:''};
 let codexSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let cursorSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let agSnap={status:'absent',windows:[],fetched_at:0,note:''};
+let grokSnap={status:'absent',windows:[],fetched_at:0,note:''};
 let gitSnap={status:'absent',level:'green',branch:'',repo_path:'',line1:'',line2:'',line3:'',fetched_at:0,note:''};
 const GIT_COL={green:'#28E07B',yellow:'#FFBF00',red:'#FF3F00',gray:'#888888'};
 function gitVisible(){ return gitSnap.status!=='absent'; }
@@ -222,7 +223,7 @@ function glyphHtml(p,small){
   if(g&&g.url) return `<img class="${g.kind}" src="${g.url}" alt="${p.name}"${small?' style="width:16px;height:16px;border-radius:4px"':''}>`;
   return small?'':p.glyph; // fallback letter
 }
-let stateSnap={sessions:[],agg:'idle',lang:'auto',lang_resolved:'en',providers:{claude:true,codex:true,cursor:true,gemini:true},edge:'right',accent:'system',accent_hex:'#00FF88',show_welcome:false};
+let stateSnap={sessions:[],agg:'idle',lang:'auto',lang_resolved:'en',providers:{claude:true,codex:true,cursor:true,gemini:true,grok:true},edge:'right',accent:'system',accent_hex:'#00FF88',show_welcome:false};
 
 function currentEdge(){
   const e=stateSnap.edge||'right';
@@ -249,6 +250,7 @@ function providers(){
   if(provOn('codex') && codexSnap.status!=='absent') list.push({id:'codex',name:'Codex',glyph:'Cx',snap:codexSnap});
   if(provOn('cursor') && cursorSnap.status!=='absent') list.push({id:'cursor',name:'Cursor',glyph:'Cu',snap:cursorSnap});
   if(provOn('gemini') && agSnap.status!=='absent') list.push({id:'gemini',name:'Antigravity',glyph:'Ag',snap:agSnap});
+  if(provOn('grok') && grokSnap.status!=='absent') list.push({id:'grok',name:'Grok',glyph:'Gk',snap:grokSnap});
   return list;
 }
 function headlineOf(snap){
@@ -265,7 +267,7 @@ const I18N={
     resets_in_min:(n)=>`через ${n} мин`,
     ago_m:(m)=>`${m} мин назад`, ago_h:(h)=>`${h} ч назад`,
     updated:(s)=>`Обновлено ${s}`, waiting:'Ждём первое чтение…',
-    auth:{claude:'Войдите в Claude Code, чтобы видеть лимиты.',cursor:'Войдите в Cursor, чтобы видеть лимиты.',codex:'Войдите в Codex, чтобы видеть лимиты.',gemini:'Войдите в Antigravity, чтобы видеть лимиты.'},
+    auth:{claude:'Войдите в Claude Code, чтобы видеть лимиты.',cursor:'Войдите в Cursor, чтобы видеть лимиты.',codex:'Войдите в Codex, чтобы видеть лимиты.',gemini:'Войдите в Antigravity, чтобы видеть лимиты.',grok:'Выполните grok login, чтобы видеть лимиты.'},
     req_today:(n)=>n>0?`~${n} запрос${n%10===1&&n%100!==11?'':n%10>=2&&n%10<=4&&(n%100<10||n%100>=20)?'а':'ов'} сегодня`:'сегодня без запросов',
     today:'сегодня', tomorrow:'завтра',
     in_h:(h)=>`через ${h} ч`, in_d:(d)=>`через ${d} дн`,
@@ -281,7 +283,7 @@ const I18N={
     resets_in_min:(n)=>`in ${n} min`,
     ago_m:(m)=>`${m}m ago`, ago_h:(h)=>`${h}h ago`,
     updated:(s)=>`Updated ${s}`, waiting:'Waiting for first reading…',
-    auth:{claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',gemini:'Sign in to Antigravity to see usage.'},
+    auth:{claude:'Sign in to Claude Code to see usage.',cursor:'Sign in to Cursor to see usage.',codex:'Sign in to Codex to see usage.',gemini:'Sign in to Antigravity to see usage.',grok:'Run grok login to see usage.'},
     req_today:(n)=>n>0?`~${n} request${n===1?'':'s'} today`:'no requests today',
     today:'today', tomorrow:'tomorrow',
     in_h:(h)=>`in ${h}h`, in_d:(d)=>`in ${d}d`,
@@ -299,7 +301,7 @@ const LABEL_RU={
   'Current session':'Текущая сессия','Weekly (all models)':'Неделя (все модели)',
   'Weekly (Opus)':'Неделя (Opus)','Weekly (model-scoped)':'Неделя (модели)',
   'Weekly limit':'Недельный лимит','Monthly limit':'Месячный лимит','Longer window':'Длинное окно',
-  'Usage':'Лимит','Requests today · no limit published':'Запросы сегодня · лимит не публикуется',
+  'Grok Build':'Grok Build','Usage':'Лимит','Requests today · no limit published':'Запросы сегодня · лимит не публикуется',
 };
 function lang(){ return (stateSnap.lang_resolved==='ru'||stateSnap.lang==='ru')?'ru':'en'; }
 function t(){ return I18N[lang()]||I18N.en; }
@@ -660,6 +662,8 @@ listen('cursor',e=>{cursorSnap=e.payload||cursorSnap;renderRing();if(card.classL
 invoke('get_cursor').then(u=>{cursorSnap=u||cursorSnap;renderRing();}).catch(()=>{});
 listen('antigravity',e=>{agSnap=e.payload||agSnap;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 invoke('get_antigravity').then(u=>{agSnap=u||agSnap;renderRing();}).catch(()=>{});
+listen('grok',e=>{grokSnap=e.payload||grokSnap;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
+invoke('get_grok').then(u=>{grokSnap=u||grokSnap;renderRing();}).catch(()=>{});
 listen('glyphs',e=>{glyphs=e.payload||glyphs;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 listen('activity',e=>{activity=e.payload||activity;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
 listen('git',e=>{gitSnap=e.payload||gitSnap;renderRing();if(card.classList.contains('show'))renderCard();}).catch(()=>{});
