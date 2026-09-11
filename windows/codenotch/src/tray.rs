@@ -66,6 +66,9 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
     )
     .checked(providers.gemini)
     .build(app)?;
+    let p_grok = CheckMenuItemBuilder::with_id("prov-grok", format!("{} Grok", tr(lang, "show")))
+        .checked(providers.grok)
+        .build(app)?;
     let git_on = {
         let st = app.state::<crate::AppState>();
         let on = st.cfg.lock().unwrap().git_status.enabled;
@@ -93,8 +96,11 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
     let a_gemini = CheckMenuItemBuilder::with_id("alert-gemini", "Antigravity")
         .checked(!muted.gemini)
         .build(app)?;
+    let a_grok = CheckMenuItemBuilder::with_id("alert-grok", "Grok")
+        .checked(!muted.grok)
+        .build(app)?;
     let alerts_menu = SubmenuBuilder::new(app, tr(lang, "alerts"))
-        .items(&[&a_claude, &a_codex, &a_cursor, &a_gemini])
+        .items(&[&a_claude, &a_codex, &a_cursor, &a_gemini, &a_grok])
         .build()?;
     let edge = {
         let st = app.state::<crate::AppState>();
@@ -169,6 +175,7 @@ pub fn build_menu(app: &AppHandle, lang: &str) -> tauri::Result<Menu<Wry>> {
         .item(&p_codex)
         .item(&p_cursor)
         .item(&p_gemini)
+        .item(&p_grok)
         .item(&p_git)
         .separator()
         .item(&lang_menu)
@@ -226,6 +233,7 @@ fn handle(app: &AppHandle, id: &str) {
             crate::codex::request_refresh();
             crate::cursor::request_refresh();
             crate::antigravity::request_refresh();
+            crate::grok::request_refresh();
             crate::gitstatus::request_refresh();
             let a = app.clone();
             std::thread::spawn(move || crate::reload_glyphs(&a));

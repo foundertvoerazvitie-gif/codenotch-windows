@@ -21,6 +21,7 @@ documented behaviour and the wire formats.
 | **Codex** | `GET https://chatgpt.com/backend-api/wham/usage` with the session Codex keeps in `~/.codex/auth.json` (read only, never refreshed), falling back to the `rate_limits` snapshot in the newest rollout log | Live primary/secondary windows (5h + weekly on paid plans, a monthly window on free) while Codex is signed in; otherwise the last snapshot, marked stale by its own timestamp. |
 | **Cursor** | The editor's own session from `state.vscdb` → `cursor.com/api/usage-summary` | **Cursor Models** ← `autoPercentUsed`, **Other Models** ← `apiPercentUsed` (not the blended `totalPercentUsed`). Reset at billing-cycle end. Nothing to sign into: it borrows the editor's session. Composer is not a separate API field. |
 | **Antigravity** | The local `language_server` bridge (quota summary), then Google's Cloud Code API for licensed accounts, then a plain count of today's model turns | Honest degradation: a percentage only when one exists, a `~count` when it does not. |
+| **Grok** | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits` with the SuperGrok / Grok CLI session in `~/.grok/auth.json` (read only; `X-XAI-Token-Auth: xai-grok-cli`) | Weekly **Grok Build** ring from `creditUsagePercent` / `productUsage`; a fresh weekly plan pool with no percent yet shows a 0% **Weekly limit** bar. Sign-in guidance: `grok login`. |
 
 Providers that are not installed simply do not get a cell. Tray toggles can hide any provider.
 
@@ -50,7 +51,7 @@ providers, edge, accent, threshold mute, Telegram, start with Windows, Claude Co
 
 Provider marks are the SVGs from [`@lobehub/icons-static-svg`](https://github.com/lobehub/lobe-icons)
 (MIT), embedded unmodified — see `codenotch/glyphs/NOTICE.md`. Drop your own
-`claude|codex|cursor|gemini.svg` (or `.png`) into `%APPDATA%\codenotch\glyphs\` to override.
+`claude|codex|cursor|gemini|grok.svg` (or `.png`) into `%APPDATA%\codenotch\glyphs\` to override.
 The marks remain the trademarks of their owners.
 
 ## Layout
@@ -58,7 +59,7 @@ The marks remain the trademarks of their owners.
 ```
 .
 ├── codenotch/          Tauri 2 app: window, tray, providers, session engine
-│   ├── src/            usage / codex / cursor / antigravity, glyphs, doctor, community
+│   ├── src/            usage / codex / cursor / antigravity / grok, glyphs, doctor, community
 │   ├── ui/notch.html   the pill + hover card (single file, no framework)
 │   └── glyphs/         provider marks (+ NOTICE.md)
 └── codenotch-hook/     <5 ms hook messenger Claude Code calls; forwards events to the app

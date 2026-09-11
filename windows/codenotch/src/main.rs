@@ -16,6 +16,7 @@ mod usage;
 mod codex;
 mod cursor;
 mod antigravity;
+mod grok;
 mod glyphs;
 mod activity;
 mod diag;
@@ -39,9 +40,10 @@ pub struct AppState {
     pub codex: Mutex<usage::UsageSnapshot>,
     pub cursor: Mutex<usage::UsageSnapshot>,
     pub antigravity: Mutex<usage::UsageSnapshot>,
+    pub grok: Mutex<usage::UsageSnapshot>,
     /// Provider glyph cache, collected at launch and again on a tray refresh
     pub glyphs: Mutex<std::collections::HashMap<String, glyphs::Glyph>>,
-    /// Working state of the non-Claude providers (Cursor reports it; Codex and Antigravity are inferred from recent writes)
+    /// Working state of the non-Claude providers (Cursor/Codex/Antigravity/Grok activity probes)
     pub activity: Mutex<Vec<activity::Activity>>,
     pub git: Mutex<gitstatus::GitSnapshot>,
 }
@@ -527,6 +529,7 @@ fn refresh_usage(app: AppHandle) {
     codex::request_refresh();
     cursor::request_refresh();
     antigravity::request_refresh();
+    grok::request_refresh();
     gitstatus::request_refresh();
 }
 
@@ -554,6 +557,11 @@ fn open_git_repo(app: AppHandle, state: tauri::State<AppState>) {
 #[tauri::command]
 fn get_antigravity(state: tauri::State<AppState>) -> usage::UsageSnapshot {
     state.antigravity.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn get_grok(state: tauri::State<AppState>) -> usage::UsageSnapshot {
+    state.grok.lock().unwrap().clone()
 }
 
 #[tauri::command]
@@ -605,6 +613,7 @@ fn open_provider_page(provider: String) {
         "codex" => "https://chatgpt.com/#settings/Account",
         "cursor" => "https://cursor.com/dashboard",
         "gemini" => "https://antigravity.google",
+        "grok" => "https://grok.com/?_s=usage",
         _ => "https://claude.ai/settings/usage",
     };
     let mut cmd = std::process::Command::new("cmd");
@@ -946,6 +955,7 @@ fn main() {
             codex: Mutex::new(codex::load_persisted()),
             cursor: Mutex::new(cursor::load_persisted()),
             antigravity: Mutex::new(antigravity::load_persisted()),
+            grok: Mutex::new(grok::load_persisted()),
             glyphs: Mutex::new(Default::default()),
             activity: Mutex::new(Vec::new()),
             git: Mutex::new(gitstatus::load_persisted()),
@@ -956,6 +966,7 @@ fn main() {
             get_codex,
             get_cursor,
             get_antigravity,
+            get_grok,
             get_glyphs,
             get_activity,
             get_git,
@@ -1000,6 +1011,7 @@ fn main() {
             codex::start(handle.clone());
             cursor::start(handle.clone());
             antigravity::start(handle.clone());
+            grok::start(handle.clone());
             activity::start(handle.clone());
             gitstatus::start(handle.clone());
             // Collecting glyphs may read icon resources out of a few executables; do it off the main thread and push when done

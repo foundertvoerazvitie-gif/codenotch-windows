@@ -23,6 +23,7 @@ Windows port of [vinzdg/codenotch](https://github.com/vinzdg/codenotch) (MIT). S
 | **Codex** | ChatGPT usage API via `~/.codex/auth.json`, else last rollout snapshot |
 | **Cursor** | Editor session → `usage-summary`: **Cursor Models** (`autoPercentUsed`), **Other Models** (`apiPercentUsed`), optional **On demand** |
 | **Antigravity** | Local bridge / Cloud Code quota, or today’s turn count |
+| **Grok** | Grok CLI / SuperGrok credits (`~/.grok/auth.json` → `cli-chat-proxy.grok.com` billing); weekly Grok Build ring |
 
 Hide unused providers from the tray. Missing installs simply omit a cell.
 

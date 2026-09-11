@@ -11,10 +11,11 @@ The SVG files in this directory come from the npm package `@lobehub/icons-static
 | cursor.svg | icons/cursor.svg | Cursor cell |
 | gemini.svg | icons/antigravity.svg | Antigravity cell |
 | gemini-alt.svg | icons/gemini.svg | alternative: the Gemini spark |
+| grok.svg | icons/grok.svg | Grok cell |
 
 MIT License — Copyright (c) LobeHub. See that repository's LICENSE.
 
-**Trademarks**: these marks are trademarks of Anthropic, OpenAI, Anysphere (Cursor) and Google
+**Trademarks**: these marks are trademarks of Anthropic, OpenAI, Anysphere (Cursor), Google and xAI
 respectively, and are used here only to identify the product whose usage is displayed. Whether
 they stay in a distributed build is the repository owner's call under each brand's guidelines;
 they can be swapped for generated glyphs without touching any code.
